@@ -1,284 +1,387 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Rotating Gap Escape</title>
-  <style>
-    html, body { height: 100%; margin: 0; background:#0b0f14; color:#d6e2f0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial; }
-    .wrap { display:grid; place-items:center; height:100%; gap:12px; }
-    canvas { background: radial-gradient(1200px 900px at 50% 40%, #0f1622 0%, #0b0f14 60%, #090d12 100%); box-shadow: 0 10px 30px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.04); border-radius: 18px; touch-action: none; }
-    .hud { display:flex; gap:16px; align-items:center; flex-wrap:wrap; justify-content:center; }
-    .pill { background:#121924; border:1px solid #223045; padding:8px 12px; border-radius:999px; font-weight:600; letter-spacing:.2px; }
-    .btn { cursor:pointer; user-select:none; }
-  </style>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Blue Bounce</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg:#0b0f14; --bg2:#0f1622; --ink:#d6e2f0; --muted:#8ea4bf;
+    --blue:#3aa9ff; --red:#ff4b4b; --gold:#ffd166;
+  }
+  html, body {
+    height: 100%;
+    margin: 0;
+    background:
+      radial-gradient(1400px 1000px at 50% 40%, var(--bg2) 0%, var(--bg) 60%, #090d12 100%);
+    color: var(--ink);
+    font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial;
+    overflow: hidden;
+  }
+  body, canvas {
+    touch-action: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .wrap { position: fixed; inset: 0; display: grid; place-items: center; min-height: 100dvh; }
+  canvas { width: 100dvw; height: 100dvh; display: block; }
+  .hud {
+    position: fixed; inset: 0; pointer-events: none;
+    display: grid; grid-template-rows: auto 1fr auto; padding: 14px;
+  }
+  .topbar { display: flex; align-items: center; justify-content: space-between; opacity: 0.9; font-weight: 600; letter-spacing: .3px; }
+  .badge {
+    padding: 6px 10px; border-radius: 999px; background: #ffffff10; backdrop-filter: blur(6px);
+    box-shadow: 0 6px 24px #00000033;
+  }
+  .centerMsg {
+    align-self: center; justify-self: center; text-align: left; line-height: 1.2;
+    padding: 18px 22px; border-radius: 20px; background: #00000050; backdrop-filter: blur(8px);
+    box-shadow: 0 8px 40px #00000055; max-width: min(92vw, 560px);
+  }
+  .centerMsg h1 { margin: 0 0 10px; font-size: clamp(22px, 5vw, 36px); }
+  .centerMsg p  { margin: 8px 0; color: var(--muted); }
+  .centerMsg ul { margin: 8px 0 0 20px; padding: 0; color: var(--muted); }
+  .hint { font-size: 13px; opacity: .9; }
+  .footer { display: flex; justify-content: center; opacity: .9; font-size: 12px; color: var(--muted); }
+</style>
 </head>
 <body>
   <div class="wrap">
-    <canvas id="game" width="900" height="700"></canvas>
-    <div class="hud">
-      <div class="pill" id="score">Score: 0</div>
-      <div class="pill" id="level">Level: 1</div>
-      <div class="pill btn" id="pause">Pause</div>
+    <canvas id="game"></canvas>
+    <div class="hud" id="hud">
+      <div class="topbar">
+        <div class="badge" id="scoreBadge">Score: 0</div>
+        <div class="badge" id="bestBadge">Best: 0</div>
+      </div>
+      <div class="centerMsg" id="centerMsg">
+        <h1 id="title">Blue Bounce</h1>
+        <p id="subtitle">Tap to bounce. Don’t touch the top, bottom, or any red ball.</p>
+        <ul>
+          <li>Pass red balls to score +1.</li>
+          <li>Tap / click • Space / ↑ to jump.</li>
+        </ul>
+        <p class="hint">Ready? Tap anywhere to start.</p>
+      </div>
+      <div class="footer">v1.1</div>
     </div>
   </div>
 
-  <script>
-  (() => {
-    const canvas = document.getElementById('game');
-    const ctx = canvas.getContext('2d');
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d', { alpha: true, desynchronized: true });
+  const centerMsg = document.getElementById('centerMsg');
+  const titleEl = document.getElementById('title');
+  const subtitleEl = document.getElementById('subtitle');
+  const scoreBadge = document.getElementById('scoreBadge');
+  const bestBadge = document.getElementById('bestBadge');
 
-    let W = canvas.width;
-    let H = canvas.height;
-    let C = { x: W/2, y: H/2 };
-    const CIRCLE_RADIUS = () => Math.min(W, H) * 0.38;
-    const SAFE_RADIUS    = () => CIRCLE_RADIUS() * 0.24; // protective inner circle (dynamic)
+  // Hi-DPI scaling: draw in CSS pixels
+  let dpr = Math.min(window.devicePixelRatio || 1, 2);
+  let W = 0, H = 0, lastW = 1, lastH = 1;
 
-    let running = true;
-    let paused = false;
-    let level = 1;
-    let score = 0;
+  function sizeCanvas() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const cssW = Math.floor(canvas.clientWidth || window.innerWidth);
+    const cssH = Math.floor(canvas.clientHeight || window.innerHeight);
+    canvas.width  = Math.floor(cssW * dpr);
+    canvas.height = Math.floor(cssH * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    W = cssW; H = cssH;
+    blue.r = Math.max(8, Math.round(H * 0.03));
+    blue.x = Math.round(W * 0.25);
+    const sx = W / lastW; const sy = H / lastH;
+    reds.forEach(r => { r.x *= sx; r.y *= sy; r.r *= sy; });
+    lastW = W; lastH = H;
+  }
 
-    let gapAngle = -Math.PI/2;
-    let gapWidth = Math.PI * 0.22;
-    let gapRotSpeed = 0.9;
+  // Mobile tuning
+  const isCoarse = matchMedia('(pointer: coarse)').matches;
+  const JUMP_SCALE = isCoarse ? 0.9 : 1.0;
+  const SPEED_SCALE = isCoarse ? 0.92 : 1.0;
 
-    const GRAVITY = 1200;
-    const JUMP_HEIGHT = 70;
-    const JUMP_V = Math.sqrt(2 * GRAVITY * JUMP_HEIGHT);
+  // Game state
+  const STATE = { READY: 0, PLAYING: 1, GAMEOVER: 2 };
+  let state = STATE.READY;
 
-    const player = { r: 10, x: 0, y: 0, vy: 0, inStartSafe: true };
+  const blue = { x: 0, y: 0, r: 18, vy: 0 };
+  const reds = [];
+  let score = 0, best = +localStorage.getItem('bluebounce_best') || 0;
+  bestBadge.textContent = `Best: ${best}`;
+  let lastSpawn = 0;
+  let spawnMin = 0.75, spawnMax = 1.25; // seconds
+  let speedBase = 0; // set in reset()
+  let gravity = 0;   // set in reset()
+  let jumpV = 0;     // set in reset()
+  let difficultyTime = 0;
+  let running = true;
 
-    let redBalls = [];
-    const redTemplate = { r: 9, speedMin: 110, speedMax: 210 };
+  // Hit FX
+  let hitFlash = 0; // 0..1
+  let burst = [];   // particles
+  let shock = null; // {x,y,r,alpha}
 
-    let pressingSpace = false;
-    let justPressed = false;
-    window.addEventListener('keydown', e => {
-      if (e.code === 'Space') {
-        if (!pressingSpace) justPressed = true;
-        pressingSpace = true; e.preventDefault();
-      }
-    });
-    window.addEventListener('keyup', e => {
-      if (e.code === 'Space') { pressingSpace = false; e.preventDefault(); }
-    });
+  function reset() {
+    score = 0;
+    scoreBadge.textContent = `Score: ${score}`;
+    reds.length = 0;
+    burst.length = 0;
+    shock = null;
+    hitFlash = 0;
+    blue.y = Math.round(H * 0.5);
+    blue.vy = 0;
+    difficultyTime = 0;
+    gravity = 3800 * (H / 800);
+    jumpV   = -1000 * (H / 800) * JUMP_SCALE;
+    speedBase = (W * 0.55) * SPEED_SCALE;
+    lastSpawn = 0;
+  }
 
-    function restart() {
-      running = true; paused = false; level = 1; score = 0; updateHud();
-      gapAngle = -Math.PI/2; gapRotSpeed = 0.9;
-      resetPlayer(true);
-      redBalls = [];
-      spawnReds(1); // level 1 = 1 red
+  function spawnRed() {
+    const r = clamp(H * rand(0.022, 0.045), 8, 40);
+    const y = clamp(rand(r, H - r), r, H - r);
+    const speed = speedBase * (1 + Math.min(0.6, difficultyTime * 0.04));
+    reds.push({ x: W + r + rand(0, W*0.15), y, r, speed, scored: false });
+  }
+
+  // Helpers
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function rand(a, b) { return a + Math.random() * (b - a); }
+  function lerp(a, b, t) { return a + (b - a) * t; }
+  function collides(a, b, br) {
+    const dx = a.x - b.x, dy = a.y - b.y;
+    const r = a.r + br;
+    return (dx*dx + dy*dy) <= (r*r);
+  }
+
+  // Input
+  function bounce() {
+    if (state === STATE.READY) {
+      state = STATE.PLAYING;
+      centerMsg.hidden = true;
+      reset();
+      return;
     }
-
-    function resetPlayer(toSafe=false) {
-      player.x = C.x; player.y = C.y; player.vy = 0;
-      player.inStartSafe = !!toSafe;
+    if (state === STATE.PLAYING) {
+      blue.vy = jumpV;
+      return;
     }
-
-    function updateHud() {
-      document.getElementById('score').textContent = `Score: ${score}`;
-      document.getElementById('level').textContent = `Level: ${level}`;
+    if (state === STATE.GAMEOVER) {
+      state = STATE.READY;
+      showCenter('Blue Bounce', 'Tap to start. Don’t touch the top, bottom, or any red ball.');
     }
+  }
 
-    function spawnReds(n) {
-      for (let i=0;i<n;i++) {
-        const t = Math.random() * Math.PI * 2;
-        const rr = 20 + Math.random() * (CIRCLE_RADIUS() - 60);
-        const x = C.x + Math.cos(t) * rr;
-        const y = C.y + Math.sin(t) * rr;
-        const ang = Math.random() * Math.PI * 2;
-        const spd = redTemplate.speedMin + Math.random()*(redTemplate.speedMax-redTemplate.speedMin);
-        redBalls.push({x,y,vx:Math.cos(ang)*spd,vy:Math.sin(ang)*spd,r:redTemplate.r,maxSpeed:spd});
-      }
-      updateHud();
+  // Overlay
+  function showCenter(title, subtitle) {
+    titleEl.textContent = title;
+    subtitleEl.textContent = subtitle;
+    centerMsg.hidden = false;
+  }
+
+  // Events
+  window.addEventListener('resize', sizeCanvas);
+  window.addEventListener('orientationchange', () => setTimeout(sizeCanvas, 0));
+  window.addEventListener('blur', () => running = false);
+  window.addEventListener('focus', () => (running = true, thenTick = performance.now()));
+  const onPointer = e => { e.preventDefault(); bounce(); };
+  canvas.addEventListener('pointerdown', onPointer, { passive: false });
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); bounce(); }
+  });
+
+  // Game Over
+  function gameOver() {
+    state = STATE.GAMEOVER;
+    if (score > best) {
+      best = score;
+      localStorage.setItem('bluebounce_best', String(best));
+      bestBadge.textContent = `Best: ${best}`;
     }
+    // Slight delay so FX are visible under HUD
+    setTimeout(() => {
+      showCenter('Game Over', `Score: ${score}`);
+    }, 120);
+    if (navigator.vibrate) navigator.vibrate(60);
+  }
 
-    function clampSpeed(b){
-      const m = Math.hypot(b.vx, b.vy);
-      if (m > b.maxSpeed) {
-        const s = b.maxSpeed / (m || 1);
-        b.vx *= s; b.vy *= s;
-      }
+  // Trigger hit FX at (x,y)
+  function triggerHitFX(x, y) {
+    hitFlash = 1;
+    shock = { x, y, r: blue.r, alpha: 0.9 };
+    const pCount = 18;
+    for (let i = 0; i < pCount; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = (H/800) * rand(140, 280);
+      burst.push({
+        x, y,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp,
+        life: rand(0.35, 0.55),
+        r: rand(2, 4),
+      });
     }
+  }
 
-    function reflectAtCircle(ball){
-      const dx=ball.x-C.x, dy=ball.y-C.y;
-      const dist=Math.hypot(dx,dy);
-      const R = CIRCLE_RADIUS();
-      if(dist+ball.r>=R){
-        const nx=dx/dist, ny=dy/dist;
-        const vdotn=ball.vx*nx+ball.vy*ny;
-        ball.vx-=2*vdotn*nx; ball.vy-=2*vdotn*ny; clampSpeed(ball);
-        const overlap=(dist+ball.r)-R;
-        ball.x-=nx*(overlap+0.5); ball.y-=ny*(overlap+0.5);
-      }
-    }
+  // Loop
+  let thenTick = performance.now();
+  sizeCanvas(); reset();
+  showCenter('Blue Bounce', 'Tap to start. Don’t touch the top, bottom, or any red ball.');
 
-    // NEW: inner protective circle collision (active only while inStartSafe)
-    function reflectAtInnerCircle(ball){
-      const dx=ball.x-C.x, dy=ball.y-C.y;
-      const dist=Math.hypot(dx,dy);
-      const rInner = SAFE_RADIUS();
-      if(dist - ball.r <= rInner){
-        const nx=dx/(dist||1), ny=dy/(dist||1);
-        const vdotn=ball.vx*nx+ball.vy*ny;
-        ball.vx-=2*vdotn*nx; ball.vy-=2*vdotn*ny; clampSpeed(ball);
-        const overlap = rInner - (dist - ball.r); // how far the ball intruded
-        ball.x += nx*(overlap+0.5); ball.y += ny*(overlap+0.5); // push outward
-      }
-    }
-
-    // Draw outer ring excluding the gap
-    function drawCircleWithGap(){
-      const start = gapAngle + gapWidth/2;
-      const end   = gapAngle - gapWidth/2;
-      ctx.beginPath();
-      ctx.arc(C.x, C.y, CIRCLE_RADIUS(), start, end, false);
-      ctx.strokeStyle = '#3a5b86';
-      ctx.lineWidth = 12;
-      ctx.lineCap = 'round';
-      ctx.stroke();
-    }
-
-    // Draw protective inner circle (visible only before start)
-    function drawProtectiveCircle(){
-      if(!player.inStartSafe) return;
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(C.x, C.y, SAFE_RADIUS(), 0, Math.PI*2);
-      ctx.strokeStyle = '#2a4665';
-      ctx.lineWidth = 6;
-      ctx.setLineDash([8,10]);
-      ctx.shadowColor = '#2a4665';
-      ctx.shadowBlur = 10;
-      ctx.stroke();
-      ctx.restore();
-    }
-
-    function drawPlayer(){
-      ctx.beginPath(); ctx.arc(player.x,player.y,player.r,0,Math.PI*2);
-      ctx.fillStyle='#4db1ff'; ctx.shadowColor='#4db1ff'; ctx.shadowBlur=12; ctx.fill(); ctx.shadowBlur=0;
-    }
-
-    function drawReds(){
-      ctx.fillStyle='#ff5454';
-      for(const b of redBalls){ ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,Math.PI*2); ctx.fill(); }
-    }
-
-    function angleOf(x,y){return Math.atan2(y-C.y,x-C.x);} 
-    function normAngle(a){a=a%(Math.PI*2); return a<0?a+Math.PI*2:a;} 
-    function withinGap(theta){
-      const a=normAngle(theta);
-      const g1=normAngle(gapAngle-gapWidth/2);
-      const g2=normAngle(gapAngle+gapWidth/2);
-      if(g1<=g2) return a>=g1&&a<=g2; return a>=g1||a<=g2;
-    }
-    function distanceToCenter(x,y){return Math.hypot(x-C.x,y-C.y);} 
-
-    function checkBlueLossOrExit(prevDist,newDist){
-      const theta=angleOf(player.x,player.y);
-      const touchingEdge=newDist+player.r>=CIRCLE_RADIUS();
-      if(touchingEdge){
-        if(withinGap(theta)&&newDist>prevDist){
-          level++; score++; updateHud(); nextLevel();
-        } else {
-          gameOver();
-        }
-      }
-    }
-
-    function gameOver(){ running=false; }
-
-    function drawOverlay(title,subtitle){
-      ctx.save(); ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(0,0,W,H);
-      ctx.fillStyle='#e7f2ff'; ctx.textAlign='center'; ctx.font='700 44px system-ui'; ctx.fillText(title,W/2,H/2-10);
-      ctx.font='500 22px system-ui'; ctx.fillStyle='#b7c9de'; ctx.fillText(subtitle,W/2,H/2+30); ctx.restore();
-    }
-
-    function nextLevel(){
-      gapRotSpeed*=1.04;
-      spawnReds(1);           // add exactly 1 red
-      resetPlayer(true);      // safe start: protective circle ON again
-      // invariant: level === redBalls.length
-    }
-
-    function resize(){
-      const dpr = window.devicePixelRatio || 1;
-      W = window.innerWidth*0.95; H = window.innerHeight*0.75;
-      canvas.width = W*dpr; canvas.height = H*dpr;
-      canvas.style.width = W+'px'; canvas.style.height = H+'px';
-      ctx.setTransform(1,0,0,1,0,0);
-      ctx.scale(dpr,dpr);
-      C = { x: W/2, y: H/2 };
-    }
-
-    canvas.addEventListener('click', () => {
-      if (!running) { restart(); return; }
-      if (!paused) {
-        if(player.inStartSafe) player.inStartSafe=false; // hide protective circle on first tap
-        player.vy=-JUMP_V;
-      }
-    });
-
-    document.getElementById('pause').addEventListener('click', () => {
-      paused = !paused;
-    });
-
-    // --- init ---
-    resize();
-    window.addEventListener('resize', resize);
-    window.addEventListener('orientationchange', resize);
-
-    restart();
-
-    let last=performance.now();
-    function loop(ts){
-      let dt=Math.min(0.033,(ts-last)/1000); last=ts;
-      if (running && !paused) {
-        gapAngle=normAngle(gapAngle+gapRotSpeed*dt);
-
-        const prevDist=distanceToCenter(player.x,player.y);
-        if(justPressed){ if(player.inStartSafe) player.inStartSafe=false; player.vy=-JUMP_V; }
-        justPressed=false;
-
-        if(!player.inStartSafe){ player.vy+=GRAVITY*dt; player.y+=player.vy*dt; }
-        else { player.vy=0; player.x=C.x; player.y=C.y; }
-
-        const newDist=distanceToCenter(player.x,player.y);
-        checkBlueLossOrExit(prevDist,newDist);
-
-        for(const b of redBalls){
-          b.x+=b.vx*dt; b.y+=b.vy*dt;
-          // collide with protective inner circle only before start
-          if(player.inStartSafe) reflectAtInnerCircle(b);
-          reflectAtCircle(b);
-        }
-
-        if(!player.inStartSafe){
-          for(const b of redBalls){
-            if(Math.hypot(b.x-player.x,b.y-player.y) < b.r + player.r){
-              gameOver(); break;
-            }
-          }
-        }
-      }
-
-      ctx.clearRect(0,0,W,H);
-      drawCircleWithGap();
-      drawProtectiveCircle();
-      drawReds();
-      drawPlayer();
-
-      if (!running) drawOverlay('Game Over', 'Tap to restart');
-      if (paused) drawOverlay('Paused','');
-
-      requestAnimationFrame(loop);
-    }
-
+  function loop(now) {
     requestAnimationFrame(loop);
-  })();
-  </script>
+    if (!running) { thenTick = now; return; }
+    let dt = Math.min(0.033, (now - thenTick) / 1000);
+    thenTick = now;
+
+    // Update + clear
+    ctx.clearRect(0, 0, W, H);
+    drawBackground();
+
+    if (state === STATE.PLAYING) {
+      difficultyTime += dt;
+
+      // Physics
+      blue.vy += gravity * dt;
+      blue.y  += blue.vy * dt;
+
+      // Top/bottom = game over
+      if (blue.y - blue.r <= 0 || blue.y + blue.r >= H) {
+        blue.y = clamp(blue.y, blue.r, H - blue.r);
+        triggerHitFX(blue.x, blue.y);
+        gameOver();
+      }
+
+      // Spawning reds
+      lastSpawn += dt;
+      const spawnGap = clamp(lerp(spawnMax, spawnMin, Math.min(1, difficultyTime * 0.08)), 0.55, 1.4);
+      if (lastSpawn >= spawnGap) { lastSpawn = 0; spawnRed(); }
+
+      // Update reds
+      for (let i = reds.length - 1; i >= 0; i--) {
+        const r = reds[i];
+        r.x -= r.speed * dt;
+
+        // Collision: blue hits red => FX + game over
+        if (collides(blue, r, r.r)) {
+          triggerHitFX((blue.x + r.x)/2, (blue.y + r.y)/2);
+          gameOver();
+          break;
+        }
+
+        // Score when fully passed the blue ball
+        if (!r.scored && (r.x + r.r) < (blue.x - blue.r)) {
+          r.scored = true;
+          score++;
+          scoreBadge.textContent = `Score: ${score}`;
+        }
+        // Remove off-screen
+        if (r.x + r.r < -8) reds.splice(i, 1);
+      }
+    }
+
+    // Draw reds
+    reds.forEach(r => {
+      ctx.beginPath();
+      ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2);
+      ctx.fillStyle = '#ff4b4b';
+      ctx.shadowColor = '#ff4b4b66';
+      ctx.shadowBlur = 12;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    });
+
+    // Draw blue
+    drawBlue();
+
+    // HUD guides
+    drawGuides();
+
+    // FX
+    drawFX(dt);
+  }
+  requestAnimationFrame(loop);
+
+  // Drawing helpers
+  function drawBlue() {
+    const g = ctx.createRadialGradient(blue.x - blue.r*0.3, blue.y - blue.r*0.4, blue.r*0.2, blue.x, blue.y, blue.r*1.1);
+    g.addColorStop(0, '#68c2ff'); g.addColorStop(1, '#3aa9ff');
+    ctx.beginPath(); ctx.arc(blue.x, blue.y, blue.r, 0, Math.PI * 2);
+    ctx.fillStyle = g; ctx.fill();
+    // gloss
+    ctx.beginPath(); ctx.arc(blue.x - blue.r*0.35, blue.y - blue.r*0.35, blue.r*0.25, 0, Math.PI*2);
+    ctx.fillStyle = '#ffffff55'; ctx.fill();
+  }
+
+  function drawBackground() {
+    const t = performance.now() / 1000;
+    const bands = 5;
+    for (let i = 0; i < bands; i++) {
+      const y = (H / bands) * i + (Math.sin(t * (0.2 + i*0.07)) * 4);
+      ctx.fillStyle = i % 2 ? '#ffffff06' : '#00000010';
+      ctx.fillRect(0, y, W, H / bands);
+    }
+  }
+
+  function drawGuides() {
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = '#ffffff07';
+    ctx.fillRect(0, 0, W, 6);           // top bar
+    ctx.fillRect(0, H - 6, W, 6);       // bottom bar
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#ffffff1a';
+    ctx.fillRect(blue.x - 1, 0, 2, H);  // blue x marker
+  }
+
+  function drawFX(dt) {
+    // Particles
+    for (let i = burst.length - 1; i >= 0; i--) {
+      const p = burst[i];
+      p.vy += (gravity * 0.12) * dt; // slight gravity for bits
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.life -= dt;
+      const a = Math.max(0, p.life) / 0.55;
+      ctx.globalAlpha = a;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fillStyle = a > 0.6 ? '#ffd166' : '#ff4b4b';
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      if (p.life <= 0) burst.splice(i, 1);
+    }
+
+    // Shock ring
+    if (shock) {
+      shock.r += (H/800) * 900 * dt;
+      shock.alpha -= dt * 1.8;
+      if (shock.alpha <= 0) shock = null;
+      else {
+        ctx.strokeStyle = `rgba(255,209,102,${Math.max(0, shock.alpha)})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(shock.x, shock.y, shock.r, 0, Math.PI*2);
+        ctx.stroke();
+      }
+    }
+
+    // Flash
+    if (hitFlash > 0) {
+      ctx.globalAlpha = Math.min(0.6, hitFlash);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, W, H);
+      ctx.globalAlpha = 1;
+      hitFlash -= dt * 2.2;
+      if (hitFlash < 0) hitFlash = 0;
+    }
+  }
+
+  // Init
+  sizeCanvas();
+
+})();
+</script>
 </body>
 </html>
