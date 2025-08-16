@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Rotating Gap Escape</title>
+  <style>
+    html, body { height: 100%; margin: 0; background:#0b0f14; color:#d6e2f0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial; }
+    .wrap { display:grid; place-items:center; height:100%; gap:12px; }
+    canvas { background: radial-gradient(1200px 900px at 50% 40%, #0f1622 0%, #0b0f14 60%, #090d12 100%); box-shadow: 0 10px 30px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.04); border-radius: 18px; touch-action: none; }
+    .hud { display:flex; gap:16px; align-items:center; flex-wrap:wrap; justify-content:center; }
+    .pill { background:#121924; border:1px solid #223045; padding:8px 12px; border-radius:999px; font-weight:600; letter-spacing:.2px; }
+    .btn { cursor:pointer; user-select:none; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <canvas id="game" width="900" height="700"></canvas>
+    <div class="hud">
+      <div class="pill" id="score">Score: 0</div>
+      <div class="pill" id="level">Level: 1</div>
+      <div class="pill btn" id="pause">Pause</div>
+    </div>
+  </div>
+
+  <script>
+  (() => {
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+
+    let W = canvas.width;
+    let H = canvas.height;
+    let C = { x: W/2, y: H/2 };
+    const CIRCLE_RADIUS = () => Math.min(W, H) * 0.38;
+    const SAFE_RADIUS    = () => CIRCLE_RADIUS() * 0.24; // protective inner circle (dynamic)
+
+    let running = true;
+    let paused = false;
+    let level = 1;
+    let score = 0;
+
+    let gapAngle = -Math.PI/2;
+    let gapWidth = Math.PI * 0.22;
+    let gapRotSpeed = 0.9;
+
+    const GRAVITY = 1200;
+    const JUMP_HEIGHT = 70;
+    const JUMP_V = Math.sqrt(2 * GRAVITY * JUMP_HEIGHT);
+
+    const player = { r: 10, x: 0, y: 0, vy: 0, inStartSafe: true };
+
+    let redBalls = [];
+    const redTemplate = { r: 9, speedMin: 110, speedMax: 210 };
+
+    let pressingSpace = false;
+    let justPressed = false;
+    window.addEventListener('keydown', e => {
+      if (e.code === 'Space') {
+        if (!pressingSpace) justPressed = true;
+        pressingSpace = true; e.preventDefault();
+      }
+    });
+    window.addEventListener('keyup', e => {
+      if (e.code === 'Space') { pressingSpace = false; e.preventDefault(); }
+    });
+
+    function restart() {
+      running = true; paused = false; level = 1; score = 0; updateHud();
+      gapAngle = -Math.PI/2; gapRotSpeed = 0.9;
+      resetPlayer(true);
+      redBalls = [];
+      spawnReds(1); // level 1 = 1 red
+    }
+
+    function resetPlayer(toSafe=false) {
+      player.x = C.x; player.y = C.y; player.vy = 0;
+      player.inStartSafe = !!toSafe;
+    }
+
+    function updateHud() {
+      document.getElementById('score').textContent = `Score: ${score}`;
+      document.getElementById('level').textContent = `Level: ${level}`;
+    }
+
+    function spawnReds(n) {
+      for (let i=0;i<n;i++) {
+        const t = Math.random() * Math.PI * 2;
+        const rr = 20 + Math.random() * (CIRCLE_RADIUS() - 60);
+        const x = C.x + Math.cos(t) * rr;
+        const y = C.y + Math.sin(t) * rr;
+        const ang = Math.random() * Math.PI * 2;
+        const spd = redTemplate.speedMin + Math.random()*(redTemplate.speedMax-redTemplate.speedMin);
+        redBalls.push({x,y,vx:Math.cos(ang)*spd,vy:Math.sin(ang)*spd,r:redTemplate.r,maxSpeed:spd});
+      }
+      updateHud();
+    }
+
+    function clampSpeed(b){
+      const m = Math.hypot(b.vx, b.vy);
+      if (m > b.maxSpeed) {
+        const s = b.maxSpeed / (m || 1);
+        b.vx *= s; b.vy *= s;
+      }
+    }
+
+    function reflectAtCircle(ball){
+      const dx=ball.x-C.x, dy=ball.y-C.y;
+      const dist=Math.hypot(dx,dy);
+      const R = CIRCLE_RADIUS();
+      if(dist+ball.r>=R){
+        const nx=dx/dist, ny=dy/dist;
+        const vdotn=ball.vx*nx+ball.vy*ny;
+        ball.vx-=2*vdotn*nx; ball.vy-=2*vdotn*ny; clampSpeed(ball);
+        const overlap=(dist+ball.r)-R;
+        ball.x-=nx*(overlap+0.5); ball.y-=ny*(overlap+0.5);
+      }
+    }
+
+    // NEW: inner protective circle collision (active only while inStartSafe)
+    function reflectAtInnerCircle(ball){
+      const dx=ball.x-C.x, dy=ball.y-C.y;
+      const dist=Math.hypot(dx,dy);
+      const rInner = SAFE_RADIUS();
+      if(dist - ball.r <= rInner){
+        const nx=dx/(dist||1), ny=dy/(dist||1);
+        const vdotn=ball.vx*nx+ball.vy*ny;
+        ball.vx-=2*vdotn*nx; ball.vy-=2*vdotn*ny; clampSpeed(ball);
+        const overlap = rInner - (dist - ball.r); // how far the ball intruded
+        ball.x += nx*(overlap+0.5); ball.y += ny*(overlap+0.5); // push outward
+      }
+    }
+
+    // Draw outer ring excluding the gap
+    function drawCircleWithGap(){
+      const start = gapAngle + gapWidth/2;
+      const end   = gapAngle - gapWidth/2;
+      ctx.beginPath();
+      ctx.arc(C.x, C.y, CIRCLE_RADIUS(), start, end, false);
+      ctx.strokeStyle = '#3a5b86';
+      ctx.lineWidth = 12;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+    }
+
+    // Draw protective inner circle (visible only before start)
+    function drawProtectiveCircle(){
+      if(!player.inStartSafe) return;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(C.x, C.y, SAFE_RADIUS(), 0, Math.PI*2);
+      ctx.strokeStyle = '#2a4665';
+      ctx.lineWidth = 6;
+      ctx.setLineDash([8,10]);
+      ctx.shadowColor = '#2a4665';
+      ctx.shadowBlur = 10;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawPlayer(){
+      ctx.beginPath(); ctx.arc(player.x,player.y,player.r,0,Math.PI*2);
+      ctx.fillStyle='#4db1ff'; ctx.shadowColor='#4db1ff'; ctx.shadowBlur=12; ctx.fill(); ctx.shadowBlur=0;
+    }
+
+    function drawReds(){
+      ctx.fillStyle='#ff5454';
+      for(const b of redBalls){ ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,Math.PI*2); ctx.fill(); }
+    }
+
+    function angleOf(x,y){return Math.atan2(y-C.y,x-C.x);} 
+    function normAngle(a){a=a%(Math.PI*2); return a<0?a+Math.PI*2:a;} 
+    function withinGap(theta){
+      const a=normAngle(theta);
+      const g1=normAngle(gapAngle-gapWidth/2);
+      const g2=normAngle(gapAngle+gapWidth/2);
+      if(g1<=g2) return a>=g1&&a<=g2; return a>=g1||a<=g2;
+    }
+    function distanceToCenter(x,y){return Math.hypot(x-C.x,y-C.y);} 
+
+    function checkBlueLossOrExit(prevDist,newDist){
+      const theta=angleOf(player.x,player.y);
+      const touchingEdge=newDist+player.r>=CIRCLE_RADIUS();
+      if(touchingEdge){
+        if(withinGap(theta)&&newDist>prevDist){
+          level++; score++; updateHud(); nextLevel();
+        } else {
+          gameOver();
+        }
+      }
+    }
+
+    function gameOver(){ running=false; }
+
+    function drawOverlay(title,subtitle){
+      ctx.save(); ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(0,0,W,H);
+      ctx.fillStyle='#e7f2ff'; ctx.textAlign='center'; ctx.font='700 44px system-ui'; ctx.fillText(title,W/2,H/2-10);
+      ctx.font='500 22px system-ui'; ctx.fillStyle='#b7c9de'; ctx.fillText(subtitle,W/2,H/2+30); ctx.restore();
+    }
+
+    function nextLevel(){
+      gapRotSpeed*=1.04;
+      spawnReds(1);           // add exactly 1 red
+      resetPlayer(true);      // safe start: protective circle ON again
+      // invariant: level === redBalls.length
+    }
+
+    function resize(){
+      const dpr = window.devicePixelRatio || 1;
+      W = window.innerWidth*0.95; H = window.innerHeight*0.75;
+      canvas.width = W*dpr; canvas.height = H*dpr;
+      canvas.style.width = W+'px'; canvas.style.height = H+'px';
+      ctx.setTransform(1,0,0,1,0,0);
+      ctx.scale(dpr,dpr);
+      C = { x: W/2, y: H/2 };
+    }
+
+    canvas.addEventListener('click', () => {
+      if (!running) { restart(); return; }
+      if (!paused) {
+        if(player.inStartSafe) player.inStartSafe=false; // hide protective circle on first tap
+        player.vy=-JUMP_V;
+      }
+    });
+
+    document.getElementById('pause').addEventListener('click', () => {
+      paused = !paused;
+    });
+
+    // --- init ---
+    resize();
+    window.addEventListener('resize', resize);
+    window.addEventListener('orientationchange', resize);
+
+    restart();
+
+    let last=performance.now();
+    function loop(ts){
+      let dt=Math.min(0.033,(ts-last)/1000); last=ts;
+      if (running && !paused) {
+        gapAngle=normAngle(gapAngle+gapRotSpeed*dt);
+
+        const prevDist=distanceToCenter(player.x,player.y);
+        if(justPressed){ if(player.inStartSafe) player.inStartSafe=false; player.vy=-JUMP_V; }
+        justPressed=false;
+
+        if(!player.inStartSafe){ player.vy+=GRAVITY*dt; player.y+=player.vy*dt; }
+        else { player.vy=0; player.x=C.x; player.y=C.y; }
+
+        const newDist=distanceToCenter(player.x,player.y);
+        checkBlueLossOrExit(prevDist,newDist);
+
+        for(const b of redBalls){
+          b.x+=b.vx*dt; b.y+=b.vy*dt;
+          // collide with protective inner circle only before start
+          if(player.inStartSafe) reflectAtInnerCircle(b);
+          reflectAtCircle(b);
+        }
+
+        if(!player.inStartSafe){
+          for(const b of redBalls){
+            if(Math.hypot(b.x-player.x,b.y-player.y) < b.r + player.r){
+              gameOver(); break;
+            }
+          }
+        }
+      }
+
+      ctx.clearRect(0,0,W,H);
+      drawCircleWithGap();
+      drawProtectiveCircle();
+      drawReds();
+      drawPlayer();
+
+      if (!running) drawOverlay('Game Over', 'Tap to restart');
+      if (paused) drawOverlay('Paused','');
+
+      requestAnimationFrame(loop);
+    }
+
+    requestAnimationFrame(loop);
+  })();
+  </script>
+</body>
+</html>
